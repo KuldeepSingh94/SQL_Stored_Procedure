@@ -1,0 +1,209 @@
+USE WebscrapeIntegration;
+GO
+
+CREATE  PROCEDURE Qa_CountVariation
+    @table_name NVARCHAR(255),
+    @unique_identifier NVARCHAR(100) = 'site',
+    @rank_given INT
+AS
+BEGIN
+    DECLARE @sql NVARCHAR(MAX);
+
+    -- to check table exist or not
+    IF EXISTS (SELECT 1 FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_NAME = @table_name)
+    BEGIN
+        -- if table exist then run this
+        SET @sql = '
+			WITH cte AS (
+				SELECT  
+					b.job_number,
+					a.Delivery_Date,
+					b.zip,
+					a.site_name,
+					a.PRODUCT_COUNT,
+					a.Table_Name,
+					b.' + QUOTENAME(@unique_identifier) + ' AS ' + QUOTENAME(@unique_identifier) + ',
+					b.today_count AS today_count,
+					Row_number() OVER (PARTITION BY b.zip, a.' + QUOTENAME(@unique_identifier) + ' ORDER BY a.delivery_date DESC) AS rank_given,
+					CASE 
+						WHEN b.zip = a.zip AND b.' + QUOTENAME(@unique_identifier) + ' = a.' + QUOTENAME(@unique_identifier) + ' THEN ''Matched''
+						WHEN b.zip != a.zip OR b.' + QUOTENAME(@unique_identifier) + ' != a.' + QUOTENAME(@unique_identifier) + ' THEN ''Not Matched''
+						ELSE ''Not matched''
+					END AS match_status
+				FROM 
+					(
+						SELECT  
+							zip,
+							site AS site_name,
+							product_count,
+							table_name,
+							' + QUOTENAME(@unique_identifier) + ',
+							CONVERT(DATETIME, delivery_date) AS delivery_date 						
+						FROM  
+							QA_STOREWISE_COUNT
+						WHERE 
+							((Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 11),7) + ''%'' AND LEN(Table_Name) = LEN(@table_name)) 
+							OR (Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 18),7) + ''%'' AND Table_Name LIKE ''%bunch%'')
+							OR (Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 18),7) + ''%'' AND @Table_Name LIKE ''%bunch%'')
+							) 
+							and delivery_date < convert(date,REPLACE(RIGHT(SUBSTRING(@table_name, LEN(@table_name) - 9, 10), 10), ''_'', ''/''))
+					) a
+				RIGHT JOIN (
+					SELECT 
+						job_number, 
+						zip,site as qa_site,
+						' + QUOTENAME(@unique_identifier) + ',
+						COUNT(*) AS today_count 
+					FROM 
+						' + QUOTENAME(@table_name) + '
+					GROUP BY 
+						zip, job_number, site, ' + QUOTENAME(@unique_identifier) + '
+				) b ON a.' + QUOTENAME(@unique_identifier) + ' = b.' + QUOTENAME(@unique_identifier) + ' AND a.ZIP = b.zip and a.site_name = b.qa_site
+			),
+			cte2 AS (
+		SELECT 
+			zip, 
+			COUNT(DISTINCT ' + QUOTENAME(@unique_identifier) + ') AS total_location_per_zip
+		FROM 
+			QA_STOREWISE_COUNT
+		WHERE 
+			Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 11),7) + ''%'' AND LEN(Table_Name) = LEN(@table_name)  and   ' + QUOTENAME(@unique_identifier) + ' != '' ''
+		GROUP BY 
+			zip
+			),
+	 cteAverage AS (
+                SELECT 
+                    b.zip,b.' + QUOTENAME(@unique_identifier) + ' as unique_name ,
+                    AVG(CASE WHEN convert(datetime,b.delivery_date) > GETDATE() - 61 THEN b.product_count END) AS average_count
+                FROM  
+				QA_STOREWISE_COUNT b
+                WHERE 
+							((Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 11),7) + ''%'' AND LEN(Table_Name) = LEN(@table_name)) 
+							OR (Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 18),7) + ''%'' AND Table_Name LIKE ''%bunch%'')
+							OR (Table_Name LIKE ''%'' + Right(LEFT(@table_name, LEN(@table_name) - 18),7) + ''%'' AND @Table_Name LIKE ''%bunch%'')
+							) 
+				
+                GROUP BY 
+                    b.zip, b.' + QUOTENAME(@unique_identifier) + '
+            )
+        SELECT 
+            cte.Job_number, cte.ZIP, cte.site_name,
+            ' + QUOTENAME(@unique_identifier) + ' AS Store_id, cte.Today_count,
+            cte.PRODUCT_COUNT AS Previous_count,
+            (cte.today_count - cte.PRODUCT_COUNT) AS Previous_count__diff,
+            cteAverage.Average_count, (cte.today_count - cteAverage.average_count) AS Average_count_diff,
+            CASE WHEN ABS(cteAverage.average_count - cte.today_count) > cteAverage.average_count / 10 THEN ''more_than_10_%'' ELSE ''under_10_%'' END AS Variation,
+            cte.Match_status, cte.table_name AS previous_table,
+            case when cte2.total_location_per_zip = 1 then ''_'' else ''more than 1 id'' end as total_zip_locations
+        FROM 
+            cte
+        left JOIN
+            cte2 ON cte.zip = cte2.zip  
+		left join 
+         cteAverage ON cte.zip = cteAverage.zip  and cte.' + QUOTENAME(@unique_identifier) + ' = cteAverage.unique_name
+		 where
+	    cte.rank_given = @rank_given
+	    order by Average_count_diff
+      
+		';
+
+		EXEC sp_executesql @sql, N'@rank_given INT, @table_name NVARCHAR(255), @unique_identifier NVARCHAR(100)', @rank_given, @table_name, @unique_identifier;
+	END
+    ELSE
+    BEGIN
+        -- if table not exist then run this
+        SET @sql = '
+        WITH cte AS (
+            SELECT  
+                b.job_number,
+                a.Delivery_Date,
+                b.zip,
+                a.site_name,
+                a.PRODUCT_COUNT,
+                a.Table_Name,
+                b.' + QUOTENAME(@unique_identifier) + ' AS ' + QUOTENAME(@unique_identifier) + ',
+                b.today_count AS today_count,
+                Row_number() OVER (PARTITION BY b.zip, a.' + QUOTENAME(@unique_identifier) + ' ORDER BY a.delivery_date DESC) AS rank_given,
+                CASE 
+                    WHEN b.zip = a.zip AND b.' + QUOTENAME(@unique_identifier) + ' = a.' + QUOTENAME(@unique_identifier) + ' THEN ''Matched''
+                    WHEN b.zip != a.zip OR b.' + QUOTENAME(@unique_identifier) + ' != a.' + QUOTENAME(@unique_identifier) + ' THEN ''Not Matched''
+                    ELSE ''Not matched''
+                END AS match_status
+            FROM 
+                (
+                    SELECT  
+                        zip,
+                        site AS site_name,
+                        product_count,
+                        table_name,
+                        ' + QUOTENAME(@unique_identifier) + ',
+                        CONVERT(DATETIME, delivery_date) AS delivery_date 						
+                    FROM  
+                        QA_STOREWISE_COUNT
+						WHERE 
+							((Table_Name LIKE ''%'' + LEFT(@table_name, LEN(@table_name) - 11) + ''%'' AND LEN(Table_Name) = LEN(@table_name)) 
+							OR (Table_Name LIKE ''%'' + LEFT(@table_name, LEN(@table_name) - 18) + ''%'' AND Table_Name LIKE ''%bunch%'')
+							OR (Table_Name LIKE ''%'' + LEFT(@table_name, LEN(@table_name) - 18) + ''%'' AND @Table_Name LIKE ''%bunch%'')
+							) 
+							and delivery_date < convert(date,REPLACE(RIGHT(SUBSTRING(@table_name, LEN(@table_name) - 9, 10), 10), ''_'', ''/''))
+                ) a
+           right JOIN (
+                SELECT 
+                    job_number, 
+                    zip,site as qa_site,
+                    ' + QUOTENAME(@unique_identifier) + ',
+                    product_count as today_count
+                FROM 
+                    QA_STOREWISE_COUNT
+		 where table_name = @table_name
+            ) b ON a.' + QUOTENAME(@unique_identifier) + ' = b.' + QUOTENAME(@unique_identifier) + ' AND a.ZIP = b.zip and a.site_name = b.qa_site
+        ),
+        cte2 AS (
+    SELECT 
+        zip, 
+        COUNT(DISTINCT ' + QUOTENAME(@unique_identifier) + ') AS total_location_per_zip
+    FROM 
+        QA_STOREWISE_COUNT
+    WHERE 
+        Table_Name LIKE ''%'' + LEFT(@table_name, LEN(@table_name) - 11) + ''%'' AND LEN(Table_Name) = LEN(@table_name)  and   ' + QUOTENAME(@unique_identifier) + ' != '' ''
+    GROUP BY 
+        zip
+        ),
+	 cteAverage AS (
+                SELECT 
+                    b.zip,b.' + QUOTENAME(@unique_identifier) + ' as unique_name ,
+                    AVG(CASE WHEN convert(datetime,b.delivery_date) > GETDATE() - 61 THEN b.product_count END) AS average_count
+                FROM  
+				QA_STOREWISE_COUNT b
+                WHERE 
+                    ((b.Table_Name LIKE ''%'' + LEFT(@table_name, LEN(@table_name) - 11) + ''%'' AND LEN(b.Table_Name) = LEN(@table_name)) 
+                    OR (b.Table_Name LIKE ''%'' + LEFT(@table_name, LEN(@table_name) - 18) + ''%'' AND b.Table_Name LIKE ''%bunch%'')) 
+                GROUP BY 
+                    b.zip, b.' + QUOTENAME(@unique_identifier) + '
+            )
+        SELECT 
+            cte.Job_number, cte.ZIP, cte.site_name,
+            ' + QUOTENAME(@unique_identifier) + ' AS Store_id, cte.Today_count,
+            cte.PRODUCT_COUNT AS Previous_count,
+            (cte.today_count - cte.PRODUCT_COUNT) AS Previous_count__diff,
+            cteAverage.Average_count, (cte.today_count - cteAverage.average_count) AS Average_count_diff,
+            CASE WHEN ABS(cteAverage.average_count - cte.today_count) > cteAverage.average_count / 10 THEN ''more_than_10_%'' ELSE ''under_10_%'' END AS Variation,
+            cte.Match_status, cte.table_name AS previous_table,
+            case when cte2.total_location_per_zip = 1 then ''_'' else ''more than 1 id'' end as total_zip_locations
+        FROM 
+            cte
+        left JOIN
+            cte2 ON cte.zip = cte2.zip  
+		left join 
+         cteAverage ON cte.zip = cteAverage.zip  and cte.' + QUOTENAME(@unique_identifier) + ' = cteAverage.unique_name
+		 where
+	    cte.rank_given = @rank_given
+	    order by Average_count_diff
+      
+    ';
+
+    EXEC sp_executesql @sql, N'@rank_given INT, @table_name NVARCHAR(255), @unique_identifier NVARCHAR(100)', @rank_given, @table_name, @unique_identifier;
+END;
+END;
+
+
