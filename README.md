@@ -1,2 +1,3 @@
-# SQL_Stored_Procedure
-Dynamic Stored Procedure to check variation and store.
+**Dynamic Stored Procedure in SQL**
+This project focuses on a dynamic stored procedure designed to enhance flexibility and efficiency in SQL query execution. The procedure incorporates robust parameter handling, variable management, Common Table Expressions (CTEs), and joins to streamline data retrieval and manipulation. It includes comprehensive validation mechanisms to ensure data integrity, specifically validating store IDs and location parameters. This implementation represents a significant improvement over previous versions by allowing for tailored queries based on dynamic inputs, optimizing performance through efficient query structuring, and ensuring high data quality through rigorous validation processes.
+
